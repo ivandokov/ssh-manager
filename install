@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+set -e
+
 sudo apt-get install ssh
 
 PORT_REGEX='^[0-9]{2,5}$'
@@ -21,8 +23,7 @@ while true; do
 done
 
 while true; do
-    echo "Disable password authentication [y/n]: " true
-    read DISABLE_PASS
+    read -p "Disable password authentication [y/n]: " DISABLE_PASS
 
     if [ "${DISABLE_PASS}" = "y" ] || [ "${DISABLE_PASS}" = "n" ]; then
         break
@@ -61,7 +62,7 @@ case ${PERMIT_ROOT_LOGIN} in
 	3) sudo sed -i 's/PermitRootLogin .*/PermitRootLogin no/' "${SSHD_CONFIG}" ;;
 esac
 
-sudo sed -i 's/#AuthorizedKeysFile.*/AuthorizedKeysFile	%h\/.ssh\/authorized_keys' "${SSHD_CONFIG}"
+sudo sed -i 's/#AuthorizedKeysFile.*/AuthorizedKeysFile	%h\/.ssh\/authorized_keys/' "${SSHD_CONFIG}"
 sudo sed -i 's/#\?RSAAuthentication .*/RSAAuthentication yes/' "${SSHD_CONFIG}"
 sudo sed -i 's/#\?PubkeyAuthentication .*/PubkeyAuthentication yes/' "${SSHD_CONFIG}"
 sudo sed -i 's/#\?PermitEmptyPasswords .*/PermitEmptyPasswords no/' "${SSHD_CONFIG}"
