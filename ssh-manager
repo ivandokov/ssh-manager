@@ -1,0 +1,262 @@
+#!/usr/bin/env bash
+
+set -e
+
+SSH_MANAGER="# SSH-MANAGER"
+SSH_BLOCK_BANNER_START="${SSH_MANAGER} BLOCK START"
+SSH_BLOCK_BANNER_END="${SSH_MANAGER} BLOCK END"
+SSH_KEY_BANNER_START="${SSH_MANAGER} KEY START"
+SSH_KEY_BANNER_END="${SSH_MANAGER} KEY END"
+
+VERBOSE=false
+for ARG in "$@"; do
+    if [ "${ARG}" = "-v" ]; then
+        VERBOSE=true
+    fi
+done
+
+function askForUser {
+    USR="$1"
+    while true; do
+        if [ -z "$USR" ]; then
+            read -p "System user: " USR
+        fi
+
+        SYS_UID="$(id -g "${USR}" 2>&1)"
+        if echo "${SYS_UID}" | grep -q 'no such user'; then
+            echo "This user does not exist"
+            USR=""
+        else
+            break
+        fi
+    done
+
+    USR_HOME=$(getent passwd ${USR} | cut -d: -f6)
+    SSH_DIR="${USR_HOME}/.ssh"
+    AUTH_KEYS="${SSH_DIR}/authorized_keys"
+}
+
+function askForName {
+    NAME="$1"
+    while true; do
+        if [ -z "${NAME}" ]; then
+            read -p "Key owner name: " NAME
+        else
+            break
+        fi
+    done
+}
+
+case $1 in
+    add)
+        askForUser $2
+        askForName "$3"
+
+        # Prompt for RSA key and trim white spaces
+        #
+        echo "Paste the key and press Ctrl-D on new line to confirm"
+        KEY=$(cat)
+        KEY=$(echo "${KEY}" | sed '/^$/d') # remove empty lines
+
+        # Validate key
+        #
+        if ! echo "${KEY}" | grep -q "ssh-rsa "; then
+            echo 'Key is invalid! Missing "ssh-rsa"'
+            exit
+        fi
+        if [ "${#KEY}" -lt 100 ]; then
+            echo "Key is less than 100 symbols long. Is it correct?"
+            exit
+        fi
+
+        # Create .ssh directory in the home directory of the user
+        # Create authorized_keys file if it doesn't exist
+        # Fix permissions
+        #
+        if ! sudo test -d "${SSH_DIR}"; then
+            echo "Creating user config directory"
+            sudo mkdir "${SSH_DIR}"
+
+            if ! sudo test -f "${AUTH_KEYS}"; then
+                echo "Creating user config file"
+                sudo tee "${AUTH_KEYS}" > /dev/null <<EOF
+${SSH_BLOCK_BANNER_START}
+${SSH_BLOCK_BANNER_END}
+EOF
+            fi
+
+            echo "Fixing config permissions"
+            sudo chown -R "${USR}":"${USR}" "${SSH_DIR}"
+            sudo chmod 700 "${SSH_DIR}"
+            sudo chmod 400 "${AUTH_KEYS}"
+        fi
+
+        # Add block banner if missing from the file
+        # Such case is when the file already exists and has content
+        #
+        if ! sudo cat ${AUTH_KEYS} | grep -q "${SSH_BLOCK_BANNER_START}"; then
+            sudo tee -a "${AUTH_KEYS}" > /dev/null <<EOF
+${SSH_BLOCK_BANNER_START}
+${SSH_BLOCK_BANNER_END}
+EOF
+        fi
+
+        KEYS=$(sudo cat "${AUTH_KEYS}")
+
+        # Check for key duplication
+        #
+        set -- "$KEY"
+        IFS=" "; declare -a KEY_PART=($*)
+        if echo "${KEYS}" | grep -qF "${KEY_PART[1]}"; then
+            echo "This key already exists!"
+            exit
+        fi
+
+        # Format the new key
+        #
+        FORMATTED_KEY="${SSH_KEY_BANNER_START}
+# ${NAME}
+${KEY}
+${SSH_KEY_BANNER_END}
+"
+
+        # Insert the new key to the KEYS variable
+        #
+        KEYS=$(echo "${KEYS}" | sed "s/${SSH_BLOCK_BANNER_END}/%s/")
+        KEYS=$(printf "${KEYS}" "${FORMATTED_KEY}${SSH_BLOCK_BANNER_END}")
+
+        # Write the KEYS to the authorized_keys file
+        #
+        echo "${KEYS}" | sudo tee "${AUTH_KEYS}" > /dev/null
+
+        echo "Key added successfully"
+        ;;
+    remove)
+        askForUser $2
+
+        # Ask for key number
+        #
+        KEY_NUMBER=$3
+        NUM_REGEX='^[0-9]+$'
+        while true; do
+            if [ -z "${KEY_NUMBER}" ]; then
+                read -p "Key number: " KEY_NUMBER
+            fi
+
+            if [[ ${KEY_NUMBER} =~ ${NUM_REGEX} ]]; then
+                break
+            fi
+        done
+
+        # Make sure the user is serious
+        #
+        read -p "Are you sure you want to DELETE it? [y/n]: " yn
+        if [ "${yn}" != "y" ]; then
+            exit 0
+        fi
+
+        KEYS_ALL="$(sudo cat "${AUTH_KEYS}")"
+        KEYS=$(sudo sed -n "/${SSH_BLOCK_BANNER_START}/,/${SSH_BLOCK_BANNER_END}/p" ${AUTH_KEYS})
+        KEYS=$(echo "${KEYS}" | sed '/^$/d') # remove empty lines
+
+        # Remove the selected key from all keys
+        #
+        FORMATTED_KEYS=""
+        SKIP=false
+        MATCHED_NUMBER=false
+        i=1
+        while read -r ROW; do
+            if echo "${ROW}" | grep -q "${SSH_KEY_BANNER_START}"; then
+                if [ "${i}" -eq "${KEY_NUMBER}" ]; then
+                    SKIP=true
+                    MATCHED_NUMBER=true
+                else
+                    SKIP=false
+                fi
+                ((i++))
+            fi
+
+            if ${SKIP} && [ "${ROW}" != "${SSH_BLOCK_BANNER_END}" ]; then continue; fi
+
+            if [ -z "${FORMATTED_KEYS}" ]; then
+                FORMATTED_KEYS="${ROW}"
+                continue
+            fi
+
+            FORMATTED_KEYS="${FORMATTED_KEYS}
+${ROW}"
+        done <<< "${KEYS}"
+
+        if ! ${MATCHED_NUMBER}; then
+            LogRed "This key number does not exist"
+            exit
+        fi
+
+        # Prepare entire keys config block for printf
+        #
+        KEYS_ALL_FORMATTED=""
+        SKIP=false
+        while read -r ROW; do
+            if echo "${ROW}" | grep -q "${SSH_BLOCK_BANNER_START}"; then
+                SKIP=true
+            fi
+
+            if echo "${ROW}" | grep -q "${SSH_BLOCK_BANNER_END}"; then
+                ROW="%s"
+                SKIP=false
+            fi
+
+            if ${SKIP}; then continue; fi
+
+            if [ -z "${KEYS_ALL_FORMATTED}" ]; then
+                KEYS_ALL_FORMATTED="${ROW}"
+                continue
+            fi
+
+            KEYS_ALL_FORMATTED="${KEYS_ALL_FORMATTED}
+${ROW}"
+        done <<< "${KEYS_ALL}"
+
+        # Replace keys config block with the filtered one
+        #
+        KEYS=$(printf "${KEYS_ALL_FORMATTED}" "${FORMATTED_KEYS}")
+
+        # Write the KEYS to the authorized_keys file
+        #
+        echo "${KEYS}" | sudo tee "${AUTH_KEYS}" > /dev/null
+
+        echo "Key removed successfully"
+        ;;
+    list)
+        askForUser $2
+
+        KEYS=$(sudo sed -n "/${SSH_BLOCK_BANNER_START}/,/${SSH_BLOCK_BANNER_END}/p" ${AUTH_KEYS})
+        KEYS=$(echo "${KEYS}" | sed '/^$/d') # remove empty lines
+        KEYS=$(echo "${KEYS}" | grep -v "${SSH_BLOCK_BANNER_START}" | grep -v "${SSH_BLOCK_BANNER_END}")
+
+        if [ -z "${KEYS}" ]; then
+            echo "No keys found"
+            exit 0
+        fi
+
+        KEYS=$(echo "${KEYS}" | grep -v "${SSH_MANAGER}")
+
+        i=1
+        while read -r ROW; do
+            if [ "$(echo ${ROW} | head -c 1)" = "#" ]; then
+                echo "$i) $(echo "${ROW}" | sed 's/^# //')"
+                ((i++))
+            elif ${VERBOSE}; then
+                echo "${ROW}"
+            fi
+        done <<< "${KEYS}"
+        ;;
+    *)
+        echo 'Invalid argument!'
+        echo ''
+        echo '  add [user] [name]'
+        echo '  remove [user] [key number]'
+        echo '  list [user]'
+        echo ''
+        ;;
+esac
