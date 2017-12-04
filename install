@@ -30,7 +30,7 @@ while true; do
     fi
 done
 
-ONE_TOW_THREE_REGEX='^[1-3]$'
+ONE_TWO_THREE_REGEX='^[1-3]$'
 while true; do
     echo "Permit root login:"
     echo "(1) yes"
@@ -38,7 +38,7 @@ while true; do
     echo "(3) no"
     read -p "Choice: " PERMIT_ROOT_LOGIN
 
-    if [[ ${PERMIT_ROOT_LOGIN} =~ ${ONE_TOW_THREE_REGEX} ]]; then
+    if [[ ${PERMIT_ROOT_LOGIN} =~ ${ONE_TWO_THREE_REGEX} ]]; then
         break
     fi
 done
